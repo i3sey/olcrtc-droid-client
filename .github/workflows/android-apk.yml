@@ -1,0 +1,82 @@
+name: Build Android APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Keeps CI aligned with android/tools/mobilebind/go.mod
+          go-version-file: android/tools/mobilebind/go.mod
+          cache: true
+          cache-dependency-path: android/tools/mobilebind/go.sum
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --version
+          yes | sdkmanager --licenses
+
+          # compileSdk/targetSdk are 36; NDK is required by build scripts.
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "ndk;26.3.11579264"
+
+          # Some runner images lag on the newest build-tools.
+          if ! sdkmanager "build-tools;36.0.0"; then
+            sdkmanager "build-tools;35.0.0"
+          fi
+
+      - name: Point Gradle to SDK (local.properties)
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Build debug APK
+        shell: bash
+        working-directory: android
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug-${{ github.run_number }}
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
